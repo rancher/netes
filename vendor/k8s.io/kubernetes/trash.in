@@ -1,0 +1,5 @@
+github.com/rancher/go-rancher ed07de9d7bd081a1d00bbaff03ade572082584d1
+golang.org/x/sync/syncmap a60ad46e0ed33d02e09bda439efaf9c9727dbc6c
+github.com/go-sql-driver/mysql 7785c74297136c027fdf2fd6f8931c0e19be8aa7
+github.com/rancher/k8s-sql b3e407f85feb403c9e29a7831aa71d28977cc43a
+bitbucket.org/ww/goautoneg a547fc61f48d567d5b4ec6f8aee5573d8efce11d https://github.com/rancher/goautoneg.git
