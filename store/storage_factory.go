@@ -36,7 +36,5 @@ func StorageFactory(pathPrefix string, config *types.GlobalConfig) (*serverstora
 		nil,
 		nil,
 		master.DefaultAPIResourceConfigSource(),
-		flag.ConfigurationMap{
-			"api/all": "true",
-		})
+		flag.ConfigurationMap{})
 }
