@@ -1,6 +1,18 @@
 package types
 
-import "github.com/rancher/netes/cluster"
+import (
+	"context"
+	"net"
+
+	"github.com/rancher/netes/cluster"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
+)
+
+type DialerContext func(context.Context, string, string) (net.Conn, error)
+
+type DialerFactory interface {
+	Dialer(cluster *v3.Cluster) (DialerContext, error)
+}
 
 type GlobalConfig struct {
 	Dialect    string
@@ -11,7 +23,8 @@ type GlobalConfig struct {
 	AdmissionControllers []string
 	ServiceNetCidr       string
 
-	Lookup *cluster.Lookup
+	Lookup        cluster.Lookup
+	DialerFactory DialerFactory
 }
 
 func FirstNotEmpty(left, right string) string {

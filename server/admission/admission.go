@@ -1,9 +1,9 @@
 package admission
 
 import (
-	"github.com/rancher/go-rancher/v3"
 	"github.com/rancher/netes/clients"
 	"github.com/rancher/netes/types"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -37,7 +37,7 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/admission/webhook"
 )
 
-func New(config *types.GlobalConfig, cluster *client.Cluster, authz authorizer.Authorizer, clients *clients.ClientSetSet) (admission.Interface, error) {
+func New(config *types.GlobalConfig, cluster *v3.Cluster, authz authorizer.Authorizer, clients *clients.ClientSetSet) (admission.Interface, error) {
 	pluginInitializer := kubeapiserveradmission.NewPluginInitializer(clients.InternalClient,
 		clients.ExternalClient,
 		clients.InternalSharedInformers,
@@ -46,7 +46,7 @@ func New(config *types.GlobalConfig, cluster *client.Cluster, authz authorizer.A
 		api.Registry.RESTMapper(),
 		quotainstall.NewRegistry(nil, nil))
 
-	names := types.FirstNotLenZero(cluster.K8sServerConfig.AdmissionControllers, config.AdmissionControllers)
+	names := types.FirstNotLenZero(cluster.Spec.EmbeddedConfig.AdmissionControllers, config.AdmissionControllers)
 	pluginsConfigProvider, err := admission.ReadAdmissionConfiguration(names, "")
 	if err != nil {
 		return nil, err
