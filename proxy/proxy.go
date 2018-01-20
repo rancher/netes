@@ -10,10 +10,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
+	"github.com/rancher/go-rancher/client"
 	"github.com/rancher/go-rancher/v3"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -25,7 +26,7 @@ const (
 	callbackHost = "localhost:8080"
 )
 
-func NewDialer(cluster *client.Cluster, accessKey, secretKey string) func(network, addr string) (net.Conn, error) {
+func NewDialer(cluster *v3.Cluster, accessKey, secretKey string) func(network, addr string) (net.Conn, error) {
 	d := &dialer{
 		clusterID: cluster.Id,
 		accessKey: accessKey,

@@ -4,18 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/rancher/go-rancher/v3"
 	"github.com/rancher/netes/cluster"
 	"github.com/rancher/netes/server"
 	"github.com/rancher/netes/types"
+	"github.com/rancher/norman/httperror"
 )
 
 type Router struct {
-	clusterLookup *cluster.Lookup
+	clusterLookup cluster.Lookup
 	serverFactory *server.Factory
 }
 
-func New(config *types.GlobalConfig) *Router {
+func New(config *types.GlobalConfig) http.Handler {
 	return &Router{
 		clusterLookup: config.Lookup,
 		serverFactory: server.NewFactory(config),
@@ -25,12 +25,12 @@ func New(config *types.GlobalConfig) *Router {
 func (r *Router) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	c, handler, err := r.serverFactory.Get(req)
 	if err != nil {
-		response(rw, http.StatusInternalServerError, err.Error())
+		response(rw, httperror.ServerError, err.Error())
 		return
 	}
 
 	if c == nil {
-		response(rw, http.StatusNotFound, "No c available")
+		response(rw, httperror.NotFound, "No cluster available")
 		return
 	}
 
@@ -38,11 +38,8 @@ func (r *Router) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	handler.ServeHTTP(rw, req.WithContext(ctx))
 }
 
-func response(rw http.ResponseWriter, code int, message string) {
-	rw.WriteHeader(code)
+func response(rw http.ResponseWriter, code httperror.ErrorCode, message string) {
+	rw.WriteHeader(code.Status)
 	rw.Header().Set("content-type", "application/json")
-	json.NewEncoder(rw).Encode(&client.Error{
-		Status:  int64(code),
-		Message: message,
-	})
+	json.NewEncoder(rw).Encode(httperror.NewAPIError(code, message))
 }

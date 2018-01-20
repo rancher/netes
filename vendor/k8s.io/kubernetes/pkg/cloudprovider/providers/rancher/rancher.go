@@ -16,17 +16,18 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/rancher/go-rancher/v3"
+	"github.com/rancher/go-rancher/v2"
 
+	api "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
-	api "k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller"
 )
 
 type Host struct {
 	RancherHost *client.Host
+	IPAddresses []client.IpAddress
 }
 
 type PublicEndpoint struct {
@@ -74,14 +75,39 @@ func (r *CloudProvider) Zones() (cloudprovider.Zones, bool) {
 	return r, true
 }
 
+// GetZoneByNodeName implements Zones.GetZoneByNodeName
+// This is particularly useful in external cloud providers where the kubelet
+// does not initialize node data.
+func (r *CloudProvider) GetZoneByNodeName(nodeName types.NodeName) (cloudprovider.Zone, error) {
+	return cloudprovider.Zone{}, errors.New("GetZoneByNodeName not imeplemented")
+}
+
+// GetZoneByProviderID implements Zones.GetZoneByProviderID
+// This is particularly useful in external cloud providers where the kubelet
+// does not initialize node data.
+func (r *CloudProvider) GetZoneByProviderID(providerID string) (cloudprovider.Zone, error) {
+	return cloudprovider.Zone{}, errors.New("GetZoneByProviderID not implemented")
+}
+
 // Instances returns an implementation of Instances for Rancher
 func (r *CloudProvider) Instances() (cloudprovider.Instances, bool) {
 	return r, true
 }
 
+// InstanceExistsByProviderID returns true if the instance with the given provider id still exists and is running.
+// If false is returned with no error, the instance will be immediately deleted by the cloud controller manager.
+func (c *CloudProvider) InstanceExistsByProviderID(providerID string) (bool, error) {
+	return false, errors.New("InstanceExistsByProviderID not imeplemented")
+}
+
 // Clusters not supported
 func (r *CloudProvider) Clusters() (cloudprovider.Clusters, bool) {
 	return nil, false
+}
+
+// HasClusterID returns true if the cluster has a clusterID
+func (r *CloudProvider) HasClusterID() bool {
+	return true
 }
 
 // Routes not supported
@@ -98,6 +124,15 @@ type instanceCollection struct {
 type instanceAndHost struct {
 	client.Instance
 	Hosts []client.Host `json:"hosts,omitempty"`
+}
+
+type hostCollection struct {
+	Data []hostAndIPAddresses
+}
+
+type hostAndIPAddresses struct {
+	client.Host
+	IPAddresses []client.IpAddress `json:"ipAddresses,omitempty"`
 }
 
 // GetLoadBalancer is an implementation of LoadBalancer.GetLoadBalancer
@@ -199,7 +234,7 @@ func (r *CloudProvider) EnsureLoadBalancer(clusterName string, service *api.Serv
 		return nil, err
 	}
 
-	if isValidToActivate(lb.State) {
+	if !strings.EqualFold(lb.State, "active") {
 		actionChannel := r.waitForLBAction("activate", lb)
 		lbInterface, ok := <-actionChannel
 		if !ok {
@@ -370,6 +405,7 @@ func (r *CloudProvider) getOrCreateEnvironment() (*client.Stack, error) {
 }
 
 func (r *CloudProvider) setLBHosts(lb *client.LoadBalancerService, hosts []string, ports []api.ServicePort) error {
+	serviceLinks := &client.SetServiceLinksInput{}
 	portRules := []client.PortRule{}
 	for _, hostname := range hosts {
 		extSvcName := buildExternalServiceName(hostname)
@@ -389,30 +425,30 @@ func (r *CloudProvider) setLBHosts(lb *client.LoadBalancerService, hosts []strin
 		} else {
 			host, err := r.hostGetOrFetchFromCache(hostname)
 			if err != nil {
-				return fmt.Errorf("Couldn't create extrnal service [%s] for LB [%s]. Error: %#v", hostname, lb.Name, err)
+				return fmt.Errorf("Couldn't create extrnal service %s for LB %s. Error: %#v", hostname, lb.Name, err)
 			}
 
-			if host.RancherHost.AgentIpAddress == "" {
+			if len(host.IPAddresses) < 1 {
 				continue
 			}
 
 			exSvc = &client.ExternalService{
 				Name:                extSvcName,
-				ExternalIpAddresses: []string{host.RancherHost.AgentIpAddress},
+				ExternalIpAddresses: []string{host.IPAddresses[0].Address},
 				StackId:             lb.StackId,
 			}
 			exSvc, err = r.client.ExternalService.Create(exSvc)
 			if err != nil {
-				return fmt.Errorf("Error setting hosts for LB [%s]. Couldn't create external service for host [%s]. Error: %#v",
+				return fmt.Errorf("Error setting hosts for LB %s. Couldn't create external service for host %s. Error: %#v",
 					lb.Name, extSvcName, err)
 			}
 		}
 
-		if isValidToActivate(exSvc.State) {
+		if exSvc.State != "active" {
 			actionChannel := r.waitForSvcAction("activate", exSvc)
 			svcInterface, ok := <-actionChannel
 			if !ok {
-				return fmt.Errorf("Couldn't call activate on external service [%s] for LB [%s] in a state [%s]", exSvc.Id, lb.Name, exSvc.State)
+				return fmt.Errorf("Couldn't call activate on external service %s for LB %s", exSvc.Id, lb.Name)
 			}
 			exSvc, ok = svcInterface.(*client.ExternalService)
 			if !ok {
@@ -421,9 +457,10 @@ func (r *CloudProvider) setLBHosts(lb *client.LoadBalancerService, hosts []strin
 
 			_, err = r.client.ExternalService.ActionActivate(exSvc)
 			if err != nil {
-				return fmt.Errorf("Couldn't activate service for LB [%s]. Error: %#v", lb.Name, err)
+				return fmt.Errorf("Couldn't activate service for LB %s. Error: %#v", lb.Name, err)
 			}
 		}
+		serviceLinks.ServiceLinks = append(serviceLinks.ServiceLinks, client.ServiceLink{ServiceId: exSvc.Id})
 		for _, port := range ports {
 			portRule := client.PortRule{
 				SourcePort: int64(port.Port),
@@ -443,28 +480,22 @@ func (r *CloudProvider) setLBHosts(lb *client.LoadBalancerService, hosts []strin
 		return fmt.Errorf("Couldn't call setservicelinks on LB %s", lb.Name)
 	}
 	lb = convertLB(lbInterface)
+	_, err := r.client.LoadBalancerService.ActionSetservicelinks(lb, serviceLinks)
+	if err != nil {
+		return fmt.Errorf("Error setting hosts for LB%s. Couldn't set LB service links. Error: %#v.", lb.Name, err)
+	}
 
 	toUpdate := make(map[string]interface{})
 	updatedConfig := client.LbConfig{}
 	updatedConfig.PortRules = portRules
 	toUpdate["lbConfig"] = updatedConfig
 
-	_, err := r.client.LoadBalancerService.Update(lb, toUpdate)
+	_, err = r.client.LoadBalancerService.Update(lb, toUpdate)
 	if err != nil {
 		return fmt.Errorf("Error updating port rules for LB [%s]. Error: %#v.", lb.Name, err)
 	}
 
 	return nil
-}
-
-func isValidToActivate(state string) bool {
-	activeStates := []string{"active", "activating", "updating-active"}
-	for _, activeState := range activeStates {
-		if strings.EqualFold(state, activeState) {
-			return false
-		}
-	}
-	return true
 }
 
 func buildExternalServiceName(hostname string) string {
@@ -614,7 +645,7 @@ func (r *CloudProvider) deleteLBConsumedServices(lb *client.LoadBalancerService)
 			glog.Infof("Service %s has more than consumer. Will not delete it.", service.Id)
 			continue
 		}
-		glog.Infof("Removing consumed external service [%s]", service.Name)
+
 		err = r.client.Service.Delete(&service)
 		if err != nil {
 			glog.Warningf("Error deleting service %s. Moving on. Error: %#v", service.Id, err)
@@ -635,20 +666,15 @@ func (r *CloudProvider) NodeAddresses(nodeName types.NodeName) ([]api.NodeAddres
 	if err != nil {
 		return nil, err
 	}
-	return []api.NodeAddress{
-		{
-			Type:    api.NodeExternalIP,
-			Address: host.RancherHost.AgentIpAddress,
-		},
-		{
-			Type:    api.NodeInternalIP,
-			Address: host.RancherHost.AgentIpAddress,
-		},
-		{
-			Type:    api.NodeHostName,
-			Address: host.RancherHost.Hostname,
-		},
-	}, nil
+
+	addresses := []api.NodeAddress{}
+	for _, ip := range host.IPAddresses {
+		addresses = append(addresses, api.NodeAddress{Type: api.NodeInternalIP, Address: ip.Address})
+		addresses = append(addresses, api.NodeAddress{Type: api.NodeExternalIP, Address: ip.Address})
+	}
+	addresses = append(addresses, api.NodeAddress{Type: api.NodeHostName, Address: host.RancherHost.Hostname})
+
+	return addresses, nil
 }
 
 // ExternalID returns the cloud provider ID of the specified instance (deprecated).
@@ -677,7 +703,9 @@ func (r *CloudProvider) InstanceType(nodeName types.NodeName) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return providerName, nil
+
+	// Maybe do something smarter here
+	return "rancher", nil
 }
 
 // InstanceTypeByProviderID returns the cloudprovider instance type of the node with the specified unique providerID
@@ -827,8 +855,21 @@ func (r *CloudProvider) getHostByName(name string) (*Host, error) {
 		return nil, fmt.Errorf("multiple instances found for name: %s", name)
 	}
 
+	rancherHost := &hostsToReturn[0]
+
+	coll := &client.IpAddressCollection{}
+	err = r.client.GetLink(rancherHost.Resource, "ipAddresses", coll)
+	if err != nil {
+		return nil, fmt.Errorf("Error getting ip addresses for node [%s]. Error: %#v", name, err)
+	}
+
+	if len(coll.Data) == 0 {
+		return nil, cloudprovider.InstanceNotFound
+	}
+
 	host := &Host{
-		RancherHost: &hostsToReturn[0],
+		RancherHost: rancherHost,
+		IPAddresses: coll.Data,
 	}
 
 	return host, nil
@@ -906,10 +947,11 @@ func (r *CloudProvider) get(url string) ([]byte, error) {
 	}
 	req.Header.Add("Authorization", basicAuth(r.conf.Global.CattleAccessKey, r.conf.Global.CattleSecretKey))
 	resp, err := http.DefaultClient.Do(req)
+
+	defer resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't get %s: %v", url, err)
 	}
-	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
